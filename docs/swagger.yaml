@@ -1,0 +1,644 @@
+basePath: /
+definitions:
+  store.ChunkResult:
+    properties:
+      chunk_id:
+        type: string
+      chunk_index:
+        type: integer
+      content:
+        type: string
+      document_id:
+        type: string
+      metadata:
+        type: object
+      score:
+        type: number
+      source_path:
+        type: string
+      text_rank:
+        type: integer
+      title:
+        type: string
+      vector_rank:
+        type: integer
+    type: object
+  store.Document:
+    properties:
+      chunk_count:
+        type: integer
+      content_hash:
+        type: string
+      created_at:
+        type: string
+      id:
+        type: string
+      metadata:
+        type: object
+      source_path:
+        type: string
+      title:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  types.Choice:
+    properties:
+      delta:
+        $ref: '#/definitions/types.Message'
+      finish_reason:
+        type: string
+      index:
+        type: integer
+      message:
+        $ref: '#/definitions/types.Message'
+    type: object
+  types.Embedding:
+    properties:
+      embedding:
+        items:
+          type: number
+        type: array
+      index:
+        type: integer
+    type: object
+  types.Message:
+    properties:
+      content:
+        type: string
+      role:
+        type: string
+    type: object
+  types.ModelObject:
+    properties:
+      capabilities:
+        items:
+          type: string
+        type: array
+      created:
+        type: integer
+      id:
+        type: string
+      object:
+        type: string
+      owned_by:
+        type: string
+    type: object
+  types.OpenAIErrorBody:
+    properties:
+      error:
+        $ref: '#/definitions/types.OpenAIErrorDetail'
+    type: object
+  types.OpenAIErrorDetail:
+    properties:
+      code:
+        type: string
+      message:
+        type: string
+      param:
+        type: string
+      type:
+        type: string
+    type: object
+  types.RAGFragment:
+    properties:
+      chunk_index:
+        type: integer
+      page:
+        type: integer
+      score:
+        type: number
+      source_path:
+        type: string
+      title:
+        type: string
+    type: object
+  types.RAGInfo:
+    properties:
+      chunks_used:
+        type: integer
+      fragments:
+        items:
+          $ref: '#/definitions/types.RAGFragment'
+        type: array
+      titles:
+        items:
+          type: string
+        type: array
+    type: object
+  types.ReqChatCompletion:
+    properties:
+      max_tokens:
+        type: integer
+      messages:
+        items:
+          $ref: '#/definitions/types.Message'
+        type: array
+      model:
+        type: string
+      prompt:
+        type: string
+      rag_top_k:
+        type: integer
+      seed:
+        type: integer
+      stream:
+        type: boolean
+      temperature:
+        type: number
+      top_p:
+        type: number
+      use_rag:
+        description: nil → из конфига RAG.UseInChatCompletions (по умолчанию true)
+        type: boolean
+      user:
+        type: string
+    type: object
+  types.ReqEmbeddings:
+    properties:
+      input:
+        type: string
+      model:
+        type: string
+      user:
+        type: string
+    required:
+    - input
+    type: object
+  types.ReqRAGIngest:
+    properties:
+      content:
+        type: string
+      metadata:
+        type: object
+      path:
+        type: string
+      title:
+        type: string
+    type: object
+  types.ReqRAGQuery:
+    properties:
+      query:
+        type: string
+      top_k:
+        type: integer
+    required:
+    - query
+    type: object
+  types.ResChatCompletion:
+    properties:
+      choices:
+        items:
+          $ref: '#/definitions/types.Choice'
+        type: array
+      created:
+        type: integer
+      id:
+        type: string
+      model:
+        type: string
+      rag:
+        $ref: '#/definitions/types.RAGInfo'
+      usage:
+        $ref: '#/definitions/types.Usage'
+    type: object
+  types.ResEmbeddings:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/types.Embedding'
+        type: array
+      model:
+        type: string
+    type: object
+  types.ResModelsList:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/types.ModelObject'
+        type: array
+      object:
+        type: string
+    type: object
+  types.ResRAGDocuments:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/store.Document'
+        type: array
+    type: object
+  types.ResRAGIngest:
+    properties:
+      document:
+        $ref: '#/definitions/store.Document'
+    type: object
+  types.ResRAGQuery:
+    properties:
+      query:
+        type: string
+      results:
+        items:
+          $ref: '#/definitions/store.ChunkResult'
+        type: array
+    type: object
+  types.ResRAGReindex:
+    properties:
+      reindexed_chunks:
+        type: integer
+    type: object
+  types.ResRAGScan:
+    properties:
+      ingested:
+        type: integer
+    type: object
+  types.Usage:
+    properties:
+      completion_tokens:
+        type: integer
+      prompt_tokens:
+        type: integer
+      total_tokens:
+        type: integer
+    type: object
+host: localhost:8080
+info:
+  contact:
+    name: API Support
+  description: OpenAI-совместимый HTTP API (chat, embeddings, models) и RAG поверх
+    PostgreSQL/pgvector.
+  license:
+    name: MIT
+  termsOfService: http://swagger.io/terms/
+  title: llama-cpp-gpt-api
+  version: "1.0"
+paths:
+  /v1/chat/completions:
+    post:
+      consumes:
+      - application/json
+      description: OpenAI-совместимая генерация ответа. При включённом RAG в system
+        подмешиваются фрагменты из базы.
+      parameters:
+      - description: Запрос
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/types.ReqChatCompletion'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/types.ResChatCompletion'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+      summary: Chat completions
+      tags:
+      - chat
+  /v1/embeddings:
+    get:
+      consumes:
+      - application/json
+      description: Векторное представление текста (POST JSON или GET query).
+      parameters:
+      - description: Тело (POST)
+        in: body
+        name: body
+        schema:
+          $ref: '#/definitions/types.ReqEmbeddings'
+      - description: Модель
+        in: query
+        name: model
+        type: string
+      - description: Текст
+        in: query
+        name: input
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/types.ResEmbeddings'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+      summary: Embeddings
+      tags:
+      - embeddings
+    post:
+      consumes:
+      - application/json
+      description: Векторное представление текста (POST JSON или GET query).
+      parameters:
+      - description: Тело (POST)
+        in: body
+        name: body
+        schema:
+          $ref: '#/definitions/types.ReqEmbeddings'
+      - description: Модель
+        in: query
+        name: model
+        type: string
+      - description: Текст
+        in: query
+        name: input
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/types.ResEmbeddings'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+      summary: Embeddings
+      tags:
+      - embeddings
+  /v1/models:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/types.ResModelsList'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+      summary: Список моделей
+      tags:
+      - models
+  /v1/models/{model}:
+    get:
+      parameters:
+      - description: ID модели
+        in: path
+        name: model
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/types.ModelObject'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+      summary: Модель по ID
+      tags:
+      - models
+  /v1/rag/documents:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/types.ResRAGDocuments'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+      summary: Список документов
+      tags:
+      - rag
+    post:
+      consumes:
+      - application/json
+      description: Индексирует content или файл по path на сервере.
+      parameters:
+      - description: Документ
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/types.ReqRAGIngest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/types.ResRAGIngest'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+        "504":
+          description: Gateway Timeout
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+      summary: Индексация документа (JSON)
+      tags:
+      - rag
+  /v1/rag/documents/{id}:
+    delete:
+      parameters:
+      - description: UUID документа
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+      summary: Удалить документ
+      tags:
+      - rag
+    get:
+      parameters:
+      - description: UUID документа
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.Document'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+      summary: Документ по ID
+      tags:
+      - rag
+  /v1/rag/documents/scan:
+    post:
+      description: Индексирует файлы из каталогов RAG.AutoIngest в конфиге.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/types.ResRAGScan'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+      summary: Сканирование каталогов
+      tags:
+      - rag
+  /v1/rag/documents/upload:
+    post:
+      consumes:
+      - multipart/form-data
+      description: 'Multipart upload: PDF, DOCX, TXT и др. — конвертация и индексация.'
+      parameters:
+      - description: Файл
+        in: formData
+        name: file
+        required: true
+        type: file
+      - description: Название документа
+        in: formData
+        name: title
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/types.ResRAGIngest'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+      summary: Загрузка файла
+      tags:
+      - rag
+  /v1/rag/query:
+    post:
+      consumes:
+      - application/json
+      description: Гибридный поиск (вектор + полнотекстовый) по проиндексированным
+        документам.
+      parameters:
+      - description: Запрос
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/types.ReqRAGQuery'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/types.ResRAGQuery'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+      summary: Поиск по RAG
+      tags:
+      - rag
+  /v1/rag/reindex-embeddings:
+    post:
+      description: Пересчитывает embedding для всех чанков (после смены префиксов
+        search_document/search_query).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/types.ResRAGReindex'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/types.OpenAIErrorBody'
+      summary: Пересчёт эмбеддингов
+      tags:
+      - rag
+schemes:
+- http
+swagger: "2.0"

@@ -1,0 +1,17 @@
+# PostgreSQL + pgvector для Hybrid RAG.
+# Запуск: docker compose -f deploy/rag-postgres/docker-compose.yaml up -d
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: gpt
+      POSTGRES_PASSWORD: gpt
+      POSTGRES_DB: gpt_rag
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

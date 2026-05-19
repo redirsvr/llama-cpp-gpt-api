@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RAG — база знаний</title>
+  <link rel="stylesheet" href="/ui/app.css">
+</head>
+<body>
+  <div class="layout">
+    <header class="header">
+      <div>
+        <h1>База знаний RAG</h1>
+        <p class="subtitle">Загрузка документов, семантический чанкинг, гибридный поиск</p>
+      </div>
+      <div id="rag-status" class="status-pill" aria-live="polite">…</div>
+    </header>
+
+    <nav class="tabs" role="tablist">
+      <button type="button" class="tab active" data-tab="upload" role="tab">Загрузка</button>
+      <button type="button" class="tab" data-tab="text" role="tab">Текст</button>
+      <button type="button" class="tab" data-tab="library" role="tab">Документы</button>
+      <button type="button" class="tab" data-tab="search" role="tab">Поиск</button>
+    </nav>
+
+    <main>
+      <section id="panel-upload" class="panel active" role="tabpanel">
+        <div class="card">
+          <h2>Файл</h2>
+          <p class="hint">Текст, Markdown, PDF, DOCX, HTML и другие файлы. Конвертация встроена, без poppler-utils.</p>
+          <div id="dropzone" class="dropzone" tabindex="0">
+            <input type="file" id="file-input" accept=".txt,.md,.markdown,.json,.csv,.log,.html,.htm,.xml,.rst,.pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/*" hidden>
+            <p class="dropzone-title">Перетащите файл сюда</p>
+            <p class="dropzone-sub">или нажмите для выбора</p>
+            <p id="file-name" class="file-name" hidden></p>
+          </div>
+          <label class="field">
+            <span>Название (необязательно)</span>
+            <input type="text" id="file-title" placeholder="Имя документа">
+          </label>
+          <button type="button" id="btn-upload-file" class="btn primary" disabled>Индексировать файл</button>
+        </div>
+
+        <div class="card">
+          <h2>Каталоги на сервере</h2>
+          <p class="hint">Сканирует пути из <code>RAG.AutoIngest.Directories</code> в конфиге.</p>
+          <button type="button" id="btn-scan" class="btn secondary">Запустить сканирование</button>
+        </div>
+      </section>
+
+      <section id="panel-text" class="panel" role="tabpanel" hidden>
+        <div class="card">
+          <h2>Вставить текст</h2>
+          <label class="field">
+            <span>Название</span>
+            <input type="text" id="text-title" placeholder="Название документа">
+          </label>
+          <label class="field">
+            <span>Содержимое</span>
+            <textarea id="text-content" rows="14" placeholder="Вставьте текст документа…"></textarea>
+          </label>
+          <button type="button" id="btn-upload-text" class="btn primary">Индексировать текст</button>
+        </div>
+      </section>
+
+      <section id="panel-library" class="panel" role="tabpanel" hidden>
+        <div class="card">
+          <div class="toolbar">
+            <h2>Документы в базе</h2>
+            <button type="button" id="btn-refresh" class="btn ghost">Обновить</button>
+          </div>
+          <p id="docs-empty" class="empty" hidden>Пока нет документов. Загрузите файл или текст.</p>
+          <div id="docs-list" class="docs-list"></div>
+        </div>
+      </section>
+
+      <section id="panel-search" class="panel" role="tabpanel" hidden>
+        <div class="card">
+          <h2>Проверка поиска</h2>
+          <label class="field">
+            <span>Запрос</span>
+            <input type="text" id="search-query" placeholder="Вопрос к базе знаний">
+          </label>
+          <label class="field field-inline">
+            <span>Top K</span>
+            <input type="number" id="search-topk" min="1" max="50" value="8">
+          </label>
+          <button type="button" id="btn-search" class="btn primary">Искать</button>
+          <div id="search-results" class="search-results"></div>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" hidden></div>
+    <div id="overlay" class="overlay" aria-hidden="true">
+      <div class="spinner-card">
+        <div class="spinner"></div>
+        <p id="overlay-text">Индексация…</p>
+        <p id="overlay-hint" class="hint">Семантический чанкинг и эмбеддинги</p>
+        <button type="button" id="btn-overlay-cancel" class="btn secondary overlay-cancel">Отменить</button>
+      </div>
+    </div>
+  </div>
+  <script src="/ui/app.js?v=7"></script>
+</body>
+</html>

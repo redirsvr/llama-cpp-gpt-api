@@ -1,0 +1,11 @@
+syntax = "v1"
+
+info (
+	title: "GPT API"
+	desc:  "LLAMA.CPP GPT API"
+)
+
+import (
+	"gpt.api"
+)
+

@@ -1,0 +1,85 @@
+syntax = "v1"
+
+type (
+	ReqChatCompletion {
+		Model       string    `json:"model,optional"`
+		Messages    []Message `json:"messages"`
+		Stream      bool      `json:"stream,optional"`
+		MaxTokens   int       `json:"max_tokens,optional"`
+		Temperature float32   `json:"temperature,optional"`
+		TopP        float32   `json:"top_p,optional"`
+		User        string    `json:"user,optional"`
+		Seed        int       `json:"seed,optional"`
+		Prompt      string    `json:"prompt,optional"`
+	}
+	Message {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+	ResChatCompletion {
+		ID      string   `json:"id"`
+		Choices []Choice `json:"choices"`
+		Created int      `json:"created"`
+		Model   string   `json:"model"`
+		Usage   Usage    `json:"usage"`
+	}
+	Usage {
+		CompletionToken int `json:"completion_tokens"`
+		PromptTokens    int `json:"prompt_tokens"`
+		TotalTokens     int `json:"total_tokens tokens"`
+	}
+	Choice {
+		Index   int     `json:"index"`
+		Message Message `json:"message,optional"`
+		Delta   Message `json:"delta,optional"`
+	}
+	ReqEmbeddings {
+		Model string `json:"model,optional"`
+		Input string `json:"input"`
+		User  string `json:"user,optional"`
+	}
+	ResEmbeddings {
+		Data  []Embedding `json:"data"`
+		Model string      `json:"model"`
+	}
+	Embedding {
+		Embedding []float32 `json:"embedding"`
+		Index     int       `json:"index"`
+	}
+	ReqModelRetrieve {
+		Model string `path:"model"`
+	}
+	ModelObject {
+		ID           string   `json:"id"`
+		Object       string   `json:"object"`
+		Created      int64    `json:"created"`
+		OwnedBy      string   `json:"owned_by"`
+		Capabilities []string `json:"capabilities,optional"`
+	}
+	ResModelsList {
+		Object string        `json:"object"`
+		Data   []ModelObject `json:"data"`
+	}
+)
+
+@server (
+	group: gpt // is used to put related logic in the same package
+)
+service gpt-api {
+	@doc "Get ChatCompletions"
+	@handler ChatCompletions
+	post /v1/chat/completions (ReqChatCompletion) returns (ResChatCompletion)
+
+	@doc "Get Embeddings"
+	@handler Embeddings
+	get /v1/embeddings (ReqEmbeddings) returns (ResEmbeddings)
+
+	@doc "List models"
+	@handler Models
+	get /v1/models returns (ResModelsList)
+
+	@doc "Retrieve model"
+	@handler ModelRetrieve
+	get /v1/models/:model (ReqModelRetrieve) returns (ModelObject)
+}
+

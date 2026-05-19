@@ -1,0 +1,12 @@
+# Подключение дашбордов при старте Grafana (volume: ./grafana → /etc/grafana).
+apiVersion: 1
+
+providers:
+  - name: gpt-api
+    orgId: 1
+    folder: GPT API
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/dashboards

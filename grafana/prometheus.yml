@@ -1,0 +1,11 @@
+# Scrape GPT API на хосте (порт из etc/gpt-api.yaml).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: gpt-api
+    metrics_path: /metrics
+    static_configs:
+      # Linux: host.docker.internal → API на хосте :8080
+      - targets: ["host.docker.internal:8080"]
