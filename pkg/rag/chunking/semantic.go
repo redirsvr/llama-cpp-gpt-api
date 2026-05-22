@@ -13,6 +13,7 @@ type BatchEmbedFunc func(texts []string) ([][]float32, error)
 type Config struct {
     MaxChunkChars        int
     MinChunkChars        int
+    OverlapChars         int     // рун перекрытия с предыдущим чанком
     BreakpointPercentile float64 // 0..1 — границы там, где соседние предложения наименее похожи
     MaxSentencesSemantic int     // при большем числе предложений — только чанкинг по размеру
 }
@@ -30,6 +31,12 @@ func (c Config) withDefaults() Config {
     if c.MaxSentencesSemantic <= 0 {
         c.MaxSentencesSemantic = 64
     }
+    if c.OverlapChars <= 0 {
+        c.OverlapChars = c.MaxChunkChars / 7
+        if c.OverlapChars < 80 {
+            c.OverlapChars = 80
+        }
+    }
     return c
 }
 
@@ -39,10 +46,10 @@ func SemanticChunks(text string, embed BatchEmbedFunc, cfg Config) ([]string, er
     cfg = cfg.withDefaults()
     sentences := SplitSentences(text)
     if len(sentences) <= 1 {
-        return MergeByCharLimit(sentences, cfg.MaxChunkChars, cfg.MinChunkChars), nil
+        return MergeByCharLimit(sentences, cfg.MaxChunkChars, cfg.MinChunkChars, cfg.OverlapChars), nil
     }
     if len(sentences) > cfg.MaxSentencesSemantic {
-        return MergeByCharLimit(sentences, cfg.MaxChunkChars, cfg.MinChunkChars), nil
+        return MergeByCharLimit(sentences, cfg.MaxChunkChars, cfg.MinChunkChars, cfg.OverlapChars), nil
     }
 
     vectors, err := embed(sentences)
@@ -74,12 +81,12 @@ func SemanticChunks(text string, embed BatchEmbedFunc, cfg Config) ([]string, er
 
     var merged []string
     for _, g := range groups {
-        merged = append(merged, MergeByCharLimit(g, cfg.MaxChunkChars, cfg.MinChunkChars)...)
+        merged = append(merged, MergeByCharLimit(g, cfg.MaxChunkChars, cfg.MinChunkChars, 0)...)
     }
     if len(merged) == 0 {
-        return MergeByCharLimit(sentences, cfg.MaxChunkChars, cfg.MinChunkChars), nil
+        return MergeByCharLimit(sentences, cfg.MaxChunkChars, cfg.MinChunkChars, cfg.OverlapChars), nil
     }
-    return merged, nil
+    return ApplyOverlap(merged, cfg.MaxChunkChars, cfg.OverlapChars), nil
 }
 
 func cosineSimilarity(a, b []float32) float64 {

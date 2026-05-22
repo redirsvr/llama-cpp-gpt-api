@@ -10,7 +10,8 @@ import (
 )
 
 // ChunksFromFile читает файл потоково, считает SHA-256 и режет на чанки с метаданными (индекс, смещения, страница PDF).
-func ChunksFromFile(path string, maxChars, minChars int) (contentHash string, chunks []Chunk, err error) {
+// overlapRunes — перекрытие с предыдущим чанком.
+func ChunksFromFile(path string, maxChars, minChars, overlapRunes int) (contentHash string, chunks []Chunk, err error) {
 	if maxChars <= 0 {
 		maxChars = 1500
 	}
@@ -128,5 +129,6 @@ func ChunksFromFile(path string, maxChars, minChars int) (contentHash string, ch
 	if len(chunks) == 0 {
 		return "", nil, fmt.Errorf("файл пуст или не содержит текста")
 	}
+	applyOverlapToFileChunks(chunks, maxChars, overlapRunes)
 	return hex.EncodeToString(hasher.Sum(nil)), chunks, nil
 }

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"llama-cpp-gpt-api/internal/config"
@@ -127,7 +128,7 @@ func (l *ChatCompletionsLogic) runChat(ll *llama.LLama, modelAlias string, req *
 	if req.Stream {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no")
 	}
 
 	text := req.Prompt
@@ -149,6 +150,10 @@ func (l *ChatCompletionsLogic) runChat(ll *llama.LLama, modelAlias string, req *
 		status = "error"
 		return nil, nil
 	}
+	if req.Stream {
+		w.WriteHeader(http.StatusOK)
+		flusher.Flush()
+	}
 
 	maxTokens := req.MaxTokens
 	if maxTokens <= 0 {
@@ -161,54 +166,137 @@ func (l *ChatCompletionsLogic) runChat(ll *llama.LLama, modelAlias string, req *
 	resolveStart := time.Now()
 	promptTokens = model.CountTokens(ll, text)
 	resolveDur = time.Since(resolveStart)
+	if promptTokens > 0 {
+		ctxSize := chatContextSize()
+		available := ctxSize - promptTokens - 4
+		if available <= 0 {
+			status = "error"
+			return nil, fmt.Errorf("prompt too long: %d tokens, context %d", promptTokens, ctxSize)
+		}
+		if maxTokens > available {
+			log.Printf("predict: max_tokens reduced %d -> %d (prompt=%d context=%d)", maxTokens, available, promptTokens, ctxSize)
+			maxTokens = available
+		}
+	}
+	log.Printf("predict params [%s]: prompt_tokens=%d max_tokens=%d context=%d batch=%d stream=%v",
+		modelAlias, promptTokens, maxTokens, chatContextSize(), chatBatchSize(), req.Stream)
+
+	var streamMu sync.Mutex
+	var streamWriteErr error
+	writeStream := func(payload string) bool {
+		if !req.Stream {
+			return true
+		}
+		streamMu.Lock()
+		defer streamMu.Unlock()
+		if streamWriteErr != nil {
+			return false
+		}
+		select {
+		case <-l.ctx.Done():
+			streamWriteErr = l.ctx.Err()
+			return false
+		default:
+		}
+		if _, err := fmt.Fprint(w, payload); err != nil {
+			streamWriteErr = err
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+	getStreamErr := func() error {
+		streamMu.Lock()
+		defer streamMu.Unlock()
+		return streamWriteErr
+	}
+
+	predict := func() (string, error) {
+		return ll.Predict(text, func(p *llama.PredictOptions) {
+			p.Tokens = maxTokens
+			p.Batch = chatBatchSize()
+			p.Temperature = 0.7
+			p.TopP = 0.9
+			p.Penalty = 1.15
+			p.Repeat = 64
+			if req.Temperature > 0 {
+				p.Temperature = req.Temperature
+			}
+			if req.TopP > 0 {
+				p.TopP = req.TopP
+			}
+			if req.Seed > 0 {
+				p.Seed = req.Seed
+			}
+			p.StopPrompts = model.QwenStopWords()
+			if req.Stream {
+				id := 0
+				p.TokenCallback = func(token string) bool {
+					data := &types.ResChatCompletion{
+						ID: fmt.Sprint(id),
+						Choices: []types.Choice{
+							{
+								Delta: &types.Message{
+									Role:    "assistant",
+									Content: token,
+								},
+								Index: 0,
+							},
+						},
+					}
+					chunk, err := json.Marshal(data)
+					if err != nil {
+						return false
+					}
+					id++
+					return writeStream("data: " + string(chunk) + "\n\n")
+				}
+			}
+			p.Threads = runtime.NumCPU()
+		})
+	}
 
 	predictStart := time.Now()
-	result, err := ll.Predict(text, func(p *llama.PredictOptions) {
-		p.Tokens = maxTokens
-		p.Temperature = 0.7
-		p.TopP = 0.9
-		p.Penalty = 1.15
-		p.Repeat = 64
-		if req.Temperature > 0 {
-			p.Temperature = req.Temperature
+	var result string
+	if req.Stream {
+		type predictResult struct {
+			text string
+			err  error
 		}
-		if req.TopP > 0 {
-			p.TopP = req.TopP
-		}
-		if req.Seed > 0 {
-			p.Seed = req.Seed
-		}
-		p.StopPrompts = model.QwenStopWords()
-		if req.Stream {
-			id := 0
-			p.TokenCallback = func(token string) bool {
-				data := &types.ResChatCompletion{
-					ID: fmt.Sprint(id),
-					Choices: []types.Choice{
-						{
-							Delta: &types.Message{
-								Role:    "assistant",
-								Content: token,
-							},
-							Index: 0,
-						},
-					},
-				}
-				chunk, err := json.Marshal(data)
-				if err != nil {
-					return false
-				}
-				id++
-				fmt.Fprint(w, "data:"+string(chunk)+"\n\n")
-				flusher.Flush()
-				return true
+		done := make(chan predictResult, 1)
+		go func() {
+			text, err := predict()
+			done <- predictResult{text: text, err: err}
+		}()
+
+		ticker := time.NewTicker(streamHeartbeatInterval())
+		defer ticker.Stop()
+		for {
+			select {
+			case r := <-done:
+				result, err = r.text, r.err
+				goto predictDone
+			case <-ticker.C:
+				writeStream(": ping\n\n")
 			}
 		}
-		p.Threads = runtime.NumCPU()
-	})
+	} else {
+		result, err = predict()
+	}
+
+predictDone:
 	predictDur = time.Since(predictStart)
+	if req.Stream && getStreamErr() != nil {
+		status = "cancelled"
+		log.Printf("stream closed [%s]: %v", modelAlias, getStreamErr())
+		return nil, nil
+	}
 	if err != nil {
 		status = "error"
+		if req.Stream {
+			writeStreamError(w, flusher, err)
+			return nil, nil
+		}
 		return nil, err
 	}
 
@@ -261,9 +349,22 @@ func (l *ChatCompletionsLogic) runChat(ll *llama.LLama, modelAlias string, req *
 		return res, nil
 	}
 
+	writeStream("data: [DONE]\n\n")
+	return nil, nil
+}
+
+func writeStreamError(w http.ResponseWriter, flusher http.Flusher, err error) {
+	payload := map[string]any{
+		"error": map[string]any{
+			"message": err.Error(),
+			"type":    "server_error",
+		},
+	}
+	if b, jsonErr := json.Marshal(payload); jsonErr == nil {
+		fmt.Fprint(w, "data: "+string(b)+"\n\n")
+	}
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
-	return nil, nil
 }
 
 func lastUserContent(messages []types.Message) string {
@@ -288,4 +389,56 @@ func tokensPerSecond(tokens int, dur time.Duration) float64 {
 		return 0
 	}
 	return float64(tokens) / dur.Seconds()
+}
+
+func chatContextSize() int {
+	const fallback = 32768
+	if n := modelOptionInt("ContextSize"); n > 0 {
+		return n
+	}
+	return fallback
+}
+
+func chatBatchSize() int {
+	const fallback = 32
+	if n := modelOptionInt("NBatch"); n > 0 {
+		return n
+	}
+	return fallback
+}
+
+func streamHeartbeatInterval() time.Duration {
+	const fallback = 5 * time.Second
+	if config.C.Timeout > 0 {
+		d := time.Duration(config.C.Timeout) * time.Millisecond / 4
+		if d >= time.Second && d < fallback {
+			return d
+		}
+	}
+	return fallback
+}
+
+func modelOptionInt(key string) int {
+	if config.C.ModelOption == nil {
+		return 0
+	}
+	v, ok := config.C.ModelOption[key]
+	if !ok {
+		return 0
+	}
+	switch n := v.(type) {
+	case int:
+		if n > 0 {
+			return n
+		}
+	case int64:
+		if n > 0 {
+			return int(n)
+		}
+	case float64:
+		if n > 0 {
+			return int(n)
+		}
+	}
+	return 0
 }

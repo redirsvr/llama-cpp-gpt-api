@@ -30,7 +30,8 @@ func SplitSentences(text string) []string {
 }
 
 // MergeByCharLimit объединяет предложения в чанки с ограничением по символам.
-func MergeByCharLimit(sentences []string, maxChars, minChars int) []string {
+// overlapRunes — перекрытие с предыдущим чанком (0 — без перекрытия).
+func MergeByCharLimit(sentences []string, maxChars, minChars, overlapRunes int) []string {
     if maxChars <= 0 {
         maxChars = 1500
     }
@@ -64,5 +65,5 @@ func MergeByCharLimit(sentences []string, maxChars, minChars int) []string {
         chunks[len(chunks)-2] += " " + chunks[len(chunks)-1]
         chunks = chunks[:len(chunks)-1]
     }
-    return chunks
+    return ApplyOverlap(chunks, maxChars, overlapRunes)
 }

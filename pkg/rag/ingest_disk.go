@@ -89,7 +89,8 @@ func cloneMeta(m map[string]any) map[string]any {
 func (s *Service) ingestLargeFile(ctx context.Context, textPath, sourcePath, title string, meta map[string]any) (*store.Document, error) {
     maxChars := MaxEmbedRunes()
     minChars := config.C.RAG.Chunking.MinChunkChars
-    hash, fileChunks, err := chunking.ChunksFromFile(textPath, maxChars, minChars)
+    overlap := config.C.RAG.Chunking.OverlapChars
+    hash, fileChunks, err := chunking.ChunksFromFile(textPath, maxChars, minChars, overlap)
     if err != nil {
         return nil, err
     }

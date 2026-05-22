@@ -2,7 +2,8 @@ package config
 
 // Config — см. etc/gpt-api.yaml и etc/gpt-api-gpu.example.yaml.
 //
-// ModelOption (GPU offload): NGPULayers, MainGPU, TensorSplit.
+// ModelOption (GPU offload): NGPULayers, AutoGPU, MainGPU, TensorSplit.
+// AutoGPU или NGPULayers: -1 — fit_params подбирает слои и распределение по GPU.
 // Embeddings в ModelOption не используется — только EmbeddingModels.
 type Config struct {
     Name    string    `yaml:"Name"`
@@ -68,6 +69,7 @@ type PostgresConfig struct {
 type ChunkingConfig struct {
     MaxChunkChars          int     `yaml:"MaxChunkChars"`
     MinChunkChars          int     `yaml:"MinChunkChars"`
+    OverlapChars           int     `yaml:"OverlapChars"` // рун перекрытия соседних чанков
     BreakpointPercentile   float64 `yaml:"BreakpointPercentile"`
     MaxSentencesSemantic   int     `yaml:"MaxSentencesSemantic"` // выше — чанкинг по размеру без embed каждого предложения
     MaxEmbedRunes          int     `yaml:"MaxEmbedRunes"`          // лимит рун на один вызов Embeddings (токены ≤ n_ubatch)

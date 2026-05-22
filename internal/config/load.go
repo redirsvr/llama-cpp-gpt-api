@@ -39,6 +39,12 @@ func Load(path string) error {
     if cfg.RAG.Chunking.MinChunkChars == 0 {
         cfg.RAG.Chunking.MinChunkChars = 80
     }
+    if cfg.RAG.Chunking.OverlapChars == 0 {
+        cfg.RAG.Chunking.OverlapChars = cfg.RAG.Chunking.MaxChunkChars / 7
+        if cfg.RAG.Chunking.OverlapChars < 80 {
+            cfg.RAG.Chunking.OverlapChars = 80
+        }
+    }
     if cfg.RAG.Chunking.MaxSentencesSemantic == 0 {
         cfg.RAG.Chunking.MaxSentencesSemantic = 64
     }

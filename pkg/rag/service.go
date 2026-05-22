@@ -152,6 +152,7 @@ func (s *Service) chunkAndEmbed(content string) ([]string, [][]float32, error) {
 	cfg := chunking.Config{
 		MaxChunkChars:        config.C.RAG.Chunking.MaxChunkChars,
 		MinChunkChars:        config.C.RAG.Chunking.MinChunkChars,
+		OverlapChars:         config.C.RAG.Chunking.OverlapChars,
 		BreakpointPercentile: config.C.RAG.Chunking.BreakpointPercentile,
 		MaxSentencesSemantic: config.C.RAG.Chunking.MaxSentencesSemantic,
 	}

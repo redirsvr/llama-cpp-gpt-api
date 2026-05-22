@@ -103,9 +103,10 @@ Swagger UI: `http://localhost:8080/docs/`
 
 ### GPU: важно
 
-- **`NGPULayers: -1`** — `fit_params` подбирает слои под VRAM (без ручного `TensorSplit`).
-- **`TensorSplit` + `NGPULayers: -1`** — несовместимы: укажите явное число слоёв, например `80`, и `TensorSplit: "1,1"` для 2 GPU.
+- **`NGPULayers: -1`** или **`AutoGPU: true`** — `fit_params` подбирает число слоёв и `tensor_split` по свободной VRAM на всех GPU; ручной `TensorSplit` из конфига сбрасывается.
+- **Ручной multi-GPU** — явное `NGPULayers` (например `80`) и `TensorSplit: "1,1"` без `AutoGPU` и без `-1`.
 - **`NGPULayers: 0` в логе** — проверьте, что в YAML числа парсятся (после исправления `ReflectVal` значения из YAML применяются корректно).
+- **`fit_params` + OOM на KV cache** — пересоберите `go-llama-new.cpp` (`make cuda`) и для обязательного 32k контекста задайте `ContextSize: 32768`, `FitParamsMinCtx: 32768`, `KVOffload: false`; fit будет подбирать слои/разбиение, а KV cache останется в RAM.
 
 ## API
 
@@ -193,7 +194,7 @@ RAG:
 | DELETE | `/v1/rag/documents/:id` | Удаление |
 | POST | `/v1/rag/query` | Гибридный поиск: `{"query":"...", "top_k":8}` |
 
-Семантический чанкинг: эмбеддинги предложений → границы по падению cosine similarity (`BreakpointPercentile`), затем объединение с лимитом `MaxChunkChars`.
+Семантический чанкинг: эмбеддинги предложений → границы по падению cosine similarity (`BreakpointPercentile`), затем объединение с лимитом `MaxChunkChars`. Соседние чанки перекрываются на `OverlapChars` рун (хвост предыдущего в начале следующего) для непрерывной цепочки контекста.
 
 ## Мониторинг
 
