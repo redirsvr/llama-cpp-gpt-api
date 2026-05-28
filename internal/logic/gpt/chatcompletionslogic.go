@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"llama-cpp-gpt-api/internal/config"
@@ -124,6 +125,8 @@ func (l *ChatCompletionsLogic) runChat(ll *llama.LLama, modelAlias string, req *
 	status := "success"
 	var promptTokens, completionTokens int
 	var resolveDur, predictDur time.Duration
+	var streamStartedAt time.Time
+	var streamedTokens atomic.Uint64
 
 	defer func() {
 		metrics.ObserveChat(modelAlias, stream, status, promptTokens, completionTokens, resolveDur, predictDur)
@@ -189,6 +192,7 @@ func (l *ChatCompletionsLogic) runChat(ll *llama.LLama, modelAlias string, req *
 
 	var streamMu sync.Mutex
 	var streamWriteErr error
+	var streamWriteFailed atomic.Bool
 	writeStream := func(payload string) bool {
 		if !req.Stream {
 			return true
@@ -206,6 +210,7 @@ func (l *ChatCompletionsLogic) runChat(ll *llama.LLama, modelAlias string, req *
 		}
 		if _, err := fmt.Fprint(w, payload); err != nil {
 			streamWriteErr = err
+			streamWriteFailed.Store(true)
 			return false
 		}
 		flusher.Flush()
@@ -216,8 +221,6 @@ func (l *ChatCompletionsLogic) runChat(ll *llama.LLama, modelAlias string, req *
 		defer streamMu.Unlock()
 		return streamWriteErr
 	}
-
-	var streamFlush func() bool
 
 	predict := func() (string, error) {
 		return ll.Predict(text, func(p *llama.PredictOptions) {
@@ -238,9 +241,18 @@ func (l *ChatCompletionsLogic) runChat(ll *llama.LLama, modelAlias string, req *
 			}
 			p.StopPrompts = model.QwenStopWords()
 			if req.Stream {
+				if streamStartedAt.IsZero() {
+					streamStartedAt = time.Now()
+				}
 				id := 0
 				stopFilter := model.NewStreamStopFilter(p.StopPrompts)
-				chunkBuf := newStreamChunkBuffer()
+
+				// ВАЖНО: TokenCallback вызывается в hot-path генерации (из C/llama.cpp).
+				// Поэтому здесь нельзя делать JSON, сеть и Flush — только минимальные операции со строками.
+				tokenCh := make(chan string, 1024)
+				var closeOnce sync.Once
+				closeTokens := func() { closeOnce.Do(func() { close(tokenCh) }) }
+
 				sendChunk := func(content string) bool {
 					if content == "" {
 						return true
@@ -264,27 +276,74 @@ func (l *ChatCompletionsLogic) runChat(ll *llama.LLama, modelAlias string, req *
 					id++
 					return writeStream("data: " + string(payload) + "\n\n")
 				}
-				streamFlush = func() bool {
-					if tail, ok := chunkBuf.FlushFinal(); ok {
-						return sendChunk(tail)
-					}
-					return true
-				}
-				p.TokenCallback = func(token string) bool {
-					chunk, stopped := stopFilter.Push(token)
-					if chunk != "" {
-						if merged, ok := chunkBuf.Push(chunk); ok {
+
+				// Writer goroutine: батчит и пишет в сеть.
+				writerDone := make(chan struct{})
+				go func() {
+					defer close(writerDone)
+					chunkBuf := newStreamChunkBuffer()
+					for s := range tokenCh {
+						if streamWriteFailed.Load() {
+							return
+						}
+						if merged, ok := chunkBuf.Push(s); ok {
 							if !sendChunk(merged) {
-								return false
+								streamWriteFailed.Store(true)
+								return
+							}
+							// Обновляем текущую скорость во время стрима.
+							if !streamStartedAt.IsZero() {
+								elapsed := time.Since(streamStartedAt)
+								if elapsed > 0 {
+									metrics.SetChatStreamTokensPerSecondCurrent(modelAlias, float64(streamedTokens.Load())/elapsed.Seconds())
+								}
 							}
 						}
 					}
+					if tail, ok := chunkBuf.FlushFinal(); ok {
+						if !sendChunk(tail) {
+							streamWriteFailed.Store(true)
+							return
+						}
+					}
+					// Финальное значение gauge.
+					if !streamStartedAt.IsZero() {
+						elapsed := time.Since(streamStartedAt)
+						if elapsed > 0 {
+							metrics.SetChatStreamTokensPerSecondCurrent(modelAlias, float64(streamedTokens.Load())/elapsed.Seconds())
+						}
+					}
+				}()
+
+				p.TokenCallback = func(token string) bool {
+					if streamWriteFailed.Load() {
+						closeTokens()
+						return false
+					}
+					chunk, stopped := stopFilter.Push(token)
+					if chunk != "" {
+						streamedTokens.Add(1)
+						select {
+						case tokenCh <- chunk:
+						case <-l.ctx.Done():
+							closeTokens()
+							return false
+						}
+					}
 					if stopped {
-						streamFlush()
+						closeTokens()
+						<-writerDone
 						return false
 					}
 					return true
 				}
+
+				// Закрыть канал после завершения predict (даже если токенов не было).
+				// Note: defer внутри опции выполнится при возврате из Predict.
+				defer func() {
+					closeTokens()
+					<-writerDone
+				}()
 			}
 			p.Threads = chatThreads()
 		})
@@ -333,18 +392,21 @@ predictDone:
 		}
 		return nil, err
 	}
-	if req.Stream && streamFlush != nil {
-		streamFlush()
+	// Для stream фиксируем итоговые streamed tokens и итоговую скорость.
+	if req.Stream && !streamStartedAt.IsZero() {
+		metrics.ObserveChatStreamedTokens(modelAlias, status, int(streamedTokens.Load()), time.Since(streamStartedAt))
 	}
-
 	rawResult := result
 	result = model.CleanAssistantReply(result)
 	if n := model.CountTokens(ll, text); n > 0 {
 		promptTokens = n
 	}
-	completionTokens = model.CountTokens(ll, rawResult)
-	if completionTokens == 0 && strings.TrimSpace(result) != "" {
-		completionTokens = model.CountTokens(ll, result)
+	// completionTokens will be set below after cleaning
+
+	// Count tokens once for cleaned result to avoid multiple tokenization
+	var cleanedTokens int
+	if strings.TrimSpace(result) != "" {
+		cleanedTokens = model.CountTokens(ll, result)
 	}
 
 	if strings.TrimSpace(result) == "" && strings.TrimSpace(rawResult) != "" {
@@ -353,14 +415,16 @@ predictDone:
 		log.Printf("warn [%s]: модель вернула пустой ответ", modelAlias)
 	}
 	log.Print("end predict [", modelAlias, "] len=", len(result),
-		" tokens=", promptTokens, "+", completionTokens,
-		" tps=", tokensPerSecond(completionTokens, predictDur))
+		" tokens=", promptTokens, "+", cleanedTokens,
+		" tps=", tokensPerSecond(cleanedTokens, predictDur))
 
 	usage := types.Usage{
 		PromptTokens:    promptTokens,
-		CompletionToken: completionTokens,
-		TotalTokens:     promptTokens + completionTokens,
+		CompletionToken: cleanedTokens,
+		TotalTokens:     promptTokens + cleanedTokens,
 	}
+	// Метрики используют completionTokens; сохраняем итог после очистки.
+	completionTokens = cleanedTokens
 
 	if !req.Stream {
 		res := &types.ResChatCompletion{
