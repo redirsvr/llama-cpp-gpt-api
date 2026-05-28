@@ -1,0 +1,36 @@
+Models:
+  # File — файл модели в ModelsDir (можно абсолютный путь).
+  # Alias — псевдоним, который будет доступен в API как model.
+  # ModelOption накладывается поверх глобального ModelOption.
+  - File: Qwen3.6-27B-Q6_K.gguf
+    Alias: qwen-27b
+    ModelOption:
+      AutoGPU: true
+      NGPULayers: -1
+      ContextSize: 32768
+      FitParamsMinCtx: 32768
+      KVOffload: false
+      NBatch: 512
+      MainGPU: "0"
+      F16Memory: true
+      MMap: true
+
+  # Пример для небольшой модели с меньшим контекстом.
+  # - File: TinyLlama-1.1B-Chat-v1.0.gguf
+  #   Alias: tiny
+  #   ModelOption:
+  #     NGPULayers: -1
+  #     ContextSize: 8192
+  #     NBatch: 512
+  #     KVOffload: true
+
+  # Пример отдельных настроек embedding-модели.
+  - File: Qwen3-Embedding-8B-Q8_0.gguf
+    Alias: qwen3-embed
+    EmbeddingModelOption:
+      ContextSize: 2048
+      NGPULayers: -1
+      NBatch: 2048
+      MainGPU: "0"
+      F16Memory: true
+      MMap: true

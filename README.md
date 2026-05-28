@@ -93,9 +93,9 @@ Swagger UI: `http://localhost:8080/docs/`
 | Параметр | Описание |
 |----------|----------|
 | `ModelsDir` | Каталог с `.gguf` / `.bin` |
-| `DefaultModel` | Алиас модели для chat (имя без расширения) |
+| `DefaultModel` | Алиас модели для chat: имя без расширения или `Alias` из `models-preset.yaml` |
 | `EmbeddingModels` | Список алиасов для `/v1/embeddings` |
-| `ModelOption` | Параметры llama.cpp: `NGPULayers`, `TensorSplit`, `ContextSize` и др. |
+| `ModelOption` | Глобальные параметры llama.cpp: `NGPULayers`, `TensorSplit`, `ContextSize` и др. |
 | `SystemPrompt` | Первое system-сообщение (как в OpenAI) |
 | `DisableThinking` | Для Qwen3: `/no_think` в промпте |
 | `PreloadDefaultModel` | `false` — не грузить модель при старте |
@@ -107,6 +107,20 @@ Swagger UI: `http://localhost:8080/docs/`
 - **Ручной multi-GPU** — явное `NGPULayers` (например `80`) и `TensorSplit: "1,1"` без `AutoGPU` и без `-1`.
 - **`NGPULayers: 0` в логе** — проверьте, что в YAML числа парсятся (после исправления `ReflectVal` значения из YAML применяются корректно).
 - **`fit_params` + OOM на KV cache** — пересоберите `go-llama-new.cpp` (`make cuda`) и для обязательного 32k контекста задайте `ContextSize: 32768`, `FitParamsMinCtx: 32768`, `KVOffload: false`; fit будет подбирать слои/разбиение, а KV cache останется в RAM.
+
+### Пресеты моделей
+
+Индивидуальные настройки моделей хранятся только в `etc/models-preset.yaml`. В основном `gpt-api.yaml` нет ссылок на этот файл. Для каждой записи указываются файл модели, API-алиас и опции, которые накладываются поверх глобального `ModelOption`.
+
+```yaml
+Models:
+  - File: Qwen3.6-27B-Q6_K.gguf
+    Alias: qwen-27b
+    ModelOption:
+      ContextSize: 32768
+      NBatch: 512
+      KVOffload: false
+```
 
 ## API
 

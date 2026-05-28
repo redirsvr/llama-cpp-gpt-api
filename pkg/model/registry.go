@@ -29,14 +29,17 @@ const (
 	loadModeEmbeddings
 )
 
+type loadedEntry struct {
+	ll *llama.LLama
+	mu sync.Mutex
+}
+
 type Registry struct {
-	mu                    sync.Mutex
+	mu                    sync.RWMutex
 	dir                   string
 	aliases               map[string]string
 	embeddingAliases      map[string]struct{}
-	loaded                *llama.LLama
-	loadedAlias           string
-	loadedMode            loadMode
+	loaded                map[string]*loadedEntry
 	defaultAlias          string
 	defaultEmbeddingAlias string
 }
@@ -58,6 +61,7 @@ func Init() error {
 	registry = &Registry{
 		aliases:               make(map[string]string),
 		embeddingAliases:      buildEmbeddingAliasSet(),
+		loaded:                make(map[string]*loadedEntry),
 		defaultAlias:          NormalizeAlias(config.C.DefaultModel),
 		defaultEmbeddingAlias: NormalizeAlias(config.C.DefaultEmbeddingModel),
 	}
@@ -74,6 +78,11 @@ func Init() error {
 		if err := registry.scan(); err != nil {
 			return err
 		}
+	}
+	if err := registry.applyPresetAliases(singleFile); err != nil {
+		return err
+	}
+	if singleFile == "" {
 		log.Printf("models: каталог %q, алиасы: %v", dir, registry.ListAliases())
 	}
 
@@ -92,15 +101,27 @@ func Init() error {
 			return fmt.Errorf("модель по умолчанию %q не найдена", registry.defaultAlias)
 		}
 		if config.C.PreloadDefaultModel {
-			log.Printf("models: предзагрузка %q", registry.defaultAlias)
-			registry.mu.Lock()
-			_, _, err := registry.getLocked(registry.defaultAlias, loadModeChat)
-			registry.mu.Unlock()
-			if err != nil {
+			log.Printf("models: предзагрузка %q (chat)", registry.defaultAlias)
+			if key, path, err := registry.resolve(registry.defaultAlias, loadModeChat); err == nil {
+				if _, err := registry.getOrLoad(key, path, loadModeChat); err != nil {
+					return err
+				}
+			} else {
 				return err
 			}
 		}
-		log.Printf("models: предзагрузка отключена, %q загрузится по первому запросу", registry.defaultAlias)
+	}
+	if registry.defaultEmbeddingAlias != "" {
+		if config.C.PreloadDefaultModel {
+			log.Printf("models: предзагрузка %q (embeddings)", registry.defaultEmbeddingAlias)
+			if key, path, err := registry.resolve(registry.defaultEmbeddingAlias, loadModeEmbeddings); err == nil {
+				if _, err := registry.getOrLoad(key, path, loadModeEmbeddings); err != nil {
+					return err
+				}
+			} else {
+				return err
+			}
+		}
 	}
 
 	return nil
@@ -201,6 +222,58 @@ func (r *Registry) scan() error {
 	return nil
 }
 
+func (r *Registry) applyPresetAliases(singleFile string) error {
+	for key, preset := range config.ModelPresets {
+		alias := NormalizeAlias(preset.Alias)
+		if alias == "" {
+			alias = NormalizeAlias(key)
+		}
+		if alias == "" {
+			return fmt.Errorf("models-preset: пустой Alias для %q", key)
+		}
+
+		file := strings.TrimSpace(preset.File)
+		if file == "" {
+			file = key
+		}
+		path, err := r.resolvePresetFile(file, singleFile)
+		if err != nil {
+			return fmt.Errorf("models-preset %q: %w", alias, err)
+		}
+		if prev, dup := r.aliases[alias]; dup && prev != path {
+			return fmt.Errorf("models-preset: алиас %q уже указывает на %s, нельзя заменить на %s", alias, prev, path)
+		}
+		r.aliases[alias] = path
+	}
+	return nil
+}
+
+func (r *Registry) resolvePresetFile(file, singleFile string) (string, error) {
+	file = strings.TrimSpace(file)
+	if file == "" {
+		return "", fmt.Errorf("не задан File")
+	}
+	var path string
+	switch {
+	case filepath.IsAbs(file):
+		path = file
+	case r.dir != "":
+		path = filepath.Join(r.dir, file)
+	case singleFile != "":
+		path = filepath.Join(filepath.Dir(singleFile), file)
+	default:
+		path = file
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(abs); err != nil {
+		return "", fmt.Errorf("File %q: %w", file, err)
+	}
+	return abs, nil
+}
+
 // NormalizeAlias возвращает алиас модели: имя файла без .gguf/.bin.
 func NormalizeAlias(name string) string {
 	name = strings.TrimSpace(name)
@@ -224,67 +297,75 @@ func (r *Registry) ListAliases() []string {
 	return out
 }
 
-// UseChat выполняет fn с эксклюзивным доступом к модели (один инференс за раз).
+func loadModeKey(alias string, mode loadMode) string {
+	return alias + ":" + loadModeLabel(mode)
+}
+
+// UseChat выполняет fn с эксклюзивным доступом к модели.
+// Разные модели могут работать параллельно.
 func UseChat(alias string, fn func(*llama.LLama, string) error) error {
-	if registry == nil {
-		return fmt.Errorf("реестр моделей не инициализирован")
-	}
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
-	ll, key, err := registry.getLocked(alias, loadModeChat)
-	if err != nil {
-		return err
-	}
-	return fn(ll, key)
+	return useModel(alias, loadModeChat, fn)
 }
 
 // UseEmbeddings — как UseChat, но для embedding-модели.
 func UseEmbeddings(alias string, fn func(*llama.LLama, string) error) error {
+	return useModel(alias, loadModeEmbeddings, fn)
+}
+
+func useModel(alias string, mode loadMode, fn func(*llama.LLama, string) error) error {
 	if registry == nil {
 		return fmt.Errorf("реестр моделей не инициализирован")
 	}
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
-	ll, key, err := registry.getLocked(alias, loadModeEmbeddings)
+
+	key, path, err := registry.resolve(alias, mode)
 	if err != nil {
 		return err
 	}
-	return fn(ll, key)
+
+	entry, err := registry.getOrLoad(key, path, mode)
+	if err != nil {
+		return err
+	}
+
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	return fn(entry.ll, key)
 }
 
-func (r *Registry) getLocked(alias string, mode loadMode) (*llama.LLama, string, error) {
-	key, path, err := r.resolve(alias, mode)
-	if err != nil {
-		return nil, "", err
+func (r *Registry) getOrLoad(key, path string, mode loadMode) (*loadedEntry, error) {
+	loadKey := loadModeKey(key, mode)
+
+	r.mu.RLock()
+	entry, ok := r.loaded[loadKey]
+	r.mu.RUnlock()
+	if ok {
+		return entry, nil
 	}
 
-	if r.loaded != nil && r.loadedAlias == key && r.loadedMode == mode {
-		return r.loaded, key, nil
-	}
-
-	if r.loaded != nil {
-		metrics.SetModelLoaded(r.loadedAlias, loadModeLabel(r.loadedMode), false)
-		r.loaded.Free()
-		r.loaded = nil
-		r.loadedAlias = ""
+	r.mu.Lock()
+	entry, ok = r.loaded[loadKey]
+	if ok {
+		r.mu.Unlock()
+		return entry, nil
 	}
 
 	embeddings := mode == loadModeEmbeddings
 	modeLabel := loadModeLabel(mode)
 	log.Printf("models: загрузка %q из %s (embeddings=%v)", key, path, embeddings)
 	loadStart := time.Now()
-	l, err := openLlama(path, embeddings)
+	l, err := openLlama(key, path, embeddings)
 	loadDur := time.Since(loadStart)
 	if err != nil {
+		r.mu.Unlock()
 		metrics.ObserveModelLoad(key, modeLabel, "error", loadDur)
-		return nil, "", err
+		return nil, err
 	}
 	metrics.ObserveModelLoad(key, modeLabel, "success", loadDur)
 	metrics.SetModelLoaded(key, modeLabel, true)
-	r.loaded = l
-	r.loadedAlias = key
-	r.loadedMode = mode
-	return l, key, nil
+	entry = &loadedEntry{ll: l}
+	r.loaded[loadKey] = entry
+	r.mu.Unlock()
+	return entry, nil
 }
 
 func loadModeLabel(mode loadMode) string {
@@ -382,13 +463,13 @@ func (r *Registry) capabilities(alias string) []string {
 	return caps
 }
 
-func openLlama(path string, embeddings bool) (*llama.LLama, error) {
+func openLlama(alias, path string, embeddings bool) (*llama.LLama, error) {
 	return llama.New(path, func(p *llama.ModelOptions) {
-		applyModelOptions(p, embeddings)
+		applyModelOptions(p, alias, path, embeddings)
 	})
 }
 
-func applyModelOptions(p *llama.ModelOptions, embeddings bool) {
+func applyModelOptions(p *llama.ModelOptions, alias, path string, embeddings bool) {
 	defer func() {
 		if err := recover(); err != nil {
 			fmt.Println("panic occurred:", err)
@@ -399,6 +480,9 @@ func applyModelOptions(p *llama.ModelOptions, embeddings bool) {
 	if embeddings && len(config.C.EmbeddingModelOption) > 0 {
 		src = config.C.EmbeddingModelOption
 	}
+	preset, hasPreset := modelPresetFor(alias, path)
+	hasPresetEmbeddingOptions := hasPreset && len(preset.EmbeddingModelOption) > 0
+	src = modelOptionsWithPreset(src, alias, path, embeddings)
 	for k, v := range src {
 		if k == "Embeddings" {
 			continue
@@ -406,7 +490,7 @@ func applyModelOptions(p *llama.ModelOptions, embeddings bool) {
 		ReflectVal(k, v, p)
 	}
 	p.Embeddings = embeddings
-	if embeddings && len(config.C.EmbeddingModelOption) == 0 {
+	if embeddings && len(config.C.EmbeddingModelOption) == 0 && !hasPresetEmbeddingOptions {
 		applyEmbeddingSafeDefaults(p)
 	}
 	ApplyAutoGPUFit(p, src)
@@ -419,6 +503,47 @@ func applyModelOptions(p *llama.ModelOptions, embeddings bool) {
 	default:
 		log.Print("Model options: ", p)
 	}
+}
+
+func modelOptionsWithPreset(base map[string]interface{}, alias, path string, embeddings bool) map[string]interface{} {
+	preset, ok := modelPresetFor(alias, path)
+	if !ok {
+		return base
+	}
+	override := preset.ModelOption
+	if embeddings && len(preset.EmbeddingModelOption) > 0 {
+		override = preset.EmbeddingModelOption
+	}
+	if len(override) == 0 {
+		return base
+	}
+	out := make(map[string]interface{}, len(base)+len(override))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range override {
+		out[k] = v
+	}
+	log.Printf("models: preset %q применён к %q (embeddings=%v)", alias, filepath.Base(path), embeddings)
+	return out
+}
+
+func modelPresetFor(alias, path string) (config.ModelPreset, bool) {
+	keys := []string{
+		alias,
+		NormalizeAlias(alias),
+		filepath.Base(path),
+		NormalizeAlias(filepath.Base(path)),
+	}
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		if preset, ok := config.ModelPresets[key]; ok {
+			return preset, true
+		}
+	}
+	return config.ModelPreset{}, false
 }
 
 // applyEmbeddingSafeDefaults — chat ModelOption (32768 ctx, TensorSplit) ломает маленькие embed-модели.

@@ -10,8 +10,7 @@ import (
 )
 
 const ragMarker = "Фрагменты документов:"
-const ragInstruction = `Ты отвечаешь на вопрос пользователя. Используй ТОЛЬКО факты из блока «Фрагменты документов» ниже.
-Если ответа нет во фрагментах — скажи: «В загруженных документах этого нет». Не используй общие знания модели.`
+const ragInstruction = `Отвечай на вопрос пользователя. Ниже — фрагменты из базы документов; используй их, если в них есть релевантные факты.`
 
 // BuildContext собирает блок контекста для system-промпта.
 func BuildContext(results []store.ChunkResult) string {
@@ -24,7 +23,11 @@ func BuildContext(results []store.ChunkResult) string {
 	b.WriteString(ragMarker)
 	b.WriteString("\n\n")
 	for i, r := range results {
-		b.WriteString(fmt.Sprintf("[%d] %s (score %.3f)\n%s\n\n", i+1, chunkCitation(r), r.Score, r.Content))
+		b.WriteString(fmt.Sprintf("[%d] %s (score %.3f)", i+1, chunkCitation(r), r.Score))
+		if kws := extractKeywordsFromMeta(r.Metadata); len(kws) > 0 {
+			b.WriteString(fmt.Sprintf(" [теги: %s]", strings.Join(kws, ", ")))
+		}
+		b.WriteString(fmt.Sprintf("\n%s\n\n", r.Content))
 	}
 	return b.String()
 }
@@ -73,6 +76,35 @@ func metaInt(m map[string]any, key string) int {
 	default:
 		return 0
 	}
+}
+
+// StripRAGFromMessages убирает RAG-инструкции из истории, когда контекст базы не подмешивается.
+func StripRAGFromMessages(messages []types.Message) []types.Message {
+	if len(messages) == 0 {
+		return messages
+	}
+	out := make([]types.Message, 0, len(messages))
+	for _, m := range messages {
+		role := strings.ToLower(strings.TrimSpace(m.Role))
+		content := m.Content
+		if role == "system" && containsRAGBlock(content) {
+			continue
+		}
+		if role == "user" {
+			content = stripInjectedRAGBlock(content)
+		}
+		if strings.TrimSpace(content) == "" && role == "user" {
+			continue
+		}
+		out = append(out, types.Message{Role: m.Role, Content: content})
+	}
+	return out
+}
+
+func containsRAGBlock(s string) bool {
+	return strings.Contains(s, ragMarker) ||
+		strings.Contains(s, "Используй ТОЛЬКО факты из блока") ||
+		strings.Contains(s, "В загруженных документах этого нет")
 }
 
 // ApplyRAGToMessages кладёт RAG в одно system-сообщение; в user остаётся только чистый вопрос.

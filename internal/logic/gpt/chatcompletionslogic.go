@@ -31,12 +31,20 @@ func NewChatCompletionsLogic(ctx context.Context, w http.ResponseWriter, r *http
 }
 
 func (l *ChatCompletionsLogic) ChatCompletions(req *types.ReqChatCompletion) (resp *types.ResChatCompletion, err error) {
-	if serviceResp := l.openWebUIServiceResponse(req); serviceResp != nil {
-		return serviceResp, nil
+	ragEnabled := rag.UseInChatCompletions(req.UseRAG)
+	if ragEnabled {
+		if serviceResp := l.openWebUIServiceResponse(req); serviceResp != nil {
+			return serviceResp, nil
+		}
+		// Сначала поиск по базе; при пустом результате — обычный ответ выбранной chat-модели.
+		l.tryAttachRAGContext(req)
 	}
-
-	// RAG до UseChat: иначе mutex реестра занят chat-моделью и embedding не загрузится (deadlock).
-	l.attachRAGContext(req)
+	if req.RAGUsed == 0 {
+		req.Messages = rag.StripRAGFromMessages(req.Messages)
+		if ragEnabled {
+			log.Printf("RAG chat: релевантных фрагментов нет — запрос направлен в модель %q", req.Model)
+		}
+	}
 
 	var out *types.ResChatCompletion
 	err = model.UseChat(req.Model, func(ll *llama.LLama, modelAlias string) error {
@@ -85,22 +93,19 @@ func (l *ChatCompletionsLogic) openWebUIServiceResponse(req *types.ReqChatComple
 	}
 }
 
-func (l *ChatCompletionsLogic) attachRAGContext(req *types.ReqChatCompletion) {
-	if !rag.UseInChatCompletions(req.UseRAG) {
-		return
-	}
+func (l *ChatCompletionsLogic) tryAttachRAGContext(req *types.ReqChatCompletion) {
 	query := rag.ExtractSearchQuery(req.Messages, req.Prompt)
 	if query == "" {
-		log.Printf("RAG chat: пропуск RAG (нет вопроса или служебный запрос Open WebUI)")
+		log.Printf("RAG chat: пропуск поиска (нет вопроса или служебный запрос Open WebUI)")
 		return
 	}
 	ctxText, hits, err := rag.FormatPromptForRAGWithHits(l.ctx, query, req.RAGTopK)
 	if err != nil {
-		log.Printf("RAG chat: поиск не удался: %v", err)
+		log.Printf("RAG chat: поиск не удался (%v) — ответ будет от модели %q", err, req.Model)
 		return
 	}
-	if ctxText == "" {
-		log.Printf("RAG chat: по запросу %q совпадений в базе нет", truncateLog(query, 120))
+	if ctxText == "" || len(hits) == 0 {
+		log.Printf("RAG chat: по запросу %q совпадений нет — ответ будет от модели %q", truncateLog(query, 120), req.Model)
 		return
 	}
 	log.Printf("RAG chat: запрос %q → %d фрагмент(ов), контекст %d символов",
@@ -142,7 +147,7 @@ func (l *ChatCompletionsLogic) runChat(ll *llama.LLama, modelAlias string, req *
 		log.Printf("RAG chat: контекст в промпте OK (%d чанков)", req.RAGUsed)
 	}
 
-	log.Print("start predict [", modelAlias, "]:\n", text)
+	log.Printf("start predict [%s]: prompt_len=%d runes stream=%v", modelAlias, len([]rune(text)), req.Stream)
 
 	flusher, flusherOk := w.(http.Flusher)
 	if req.Stream && !flusherOk {
@@ -164,22 +169,23 @@ func (l *ChatCompletionsLogic) runChat(ll *llama.LLama, modelAlias string, req *
 	}
 
 	resolveStart := time.Now()
-	promptTokens = model.CountTokens(ll, text)
+	promptTokens = model.EstimatePromptTokens(text)
 	resolveDur = time.Since(resolveStart)
 	if promptTokens > 0 {
-		ctxSize := chatContextSize()
+		ctxSize := chatContextSize(modelAlias)
 		available := ctxSize - promptTokens - 4
 		if available <= 0 {
 			status = "error"
-			return nil, fmt.Errorf("prompt too long: %d tokens, context %d", promptTokens, ctxSize)
+			return nil, fmt.Errorf("prompt too long: ~%d tokens, context %d", promptTokens, ctxSize)
 		}
 		if maxTokens > available {
-			log.Printf("predict: max_tokens reduced %d -> %d (prompt=%d context=%d)", maxTokens, available, promptTokens, ctxSize)
+			log.Printf("predict: max_tokens reduced %d -> %d (prompt~=%d context=%d)", maxTokens, available, promptTokens, ctxSize)
 			maxTokens = available
 		}
 	}
-	log.Printf("predict params [%s]: prompt_tokens=%d max_tokens=%d context=%d batch=%d stream=%v",
-		modelAlias, promptTokens, maxTokens, chatContextSize(), chatBatchSize(), req.Stream)
+	batchSize := chatBatchSize(modelAlias)
+	log.Printf("predict params [%s]: prompt_tokens~=%d max_tokens=%d context=%d batch=%d stream=%v",
+		modelAlias, promptTokens, maxTokens, chatContextSize(modelAlias), batchSize, req.Stream)
 
 	var streamMu sync.Mutex
 	var streamWriteErr error
@@ -211,10 +217,12 @@ func (l *ChatCompletionsLogic) runChat(ll *llama.LLama, modelAlias string, req *
 		return streamWriteErr
 	}
 
+	var streamFlush func() bool
+
 	predict := func() (string, error) {
 		return ll.Predict(text, func(p *llama.PredictOptions) {
 			p.Tokens = maxTokens
-			p.Batch = chatBatchSize()
+			p.Batch = batchSize
 			p.Temperature = 0.7
 			p.TopP = 0.9
 			p.Penalty = 1.15
@@ -231,28 +239,54 @@ func (l *ChatCompletionsLogic) runChat(ll *llama.LLama, modelAlias string, req *
 			p.StopPrompts = model.QwenStopWords()
 			if req.Stream {
 				id := 0
-				p.TokenCallback = func(token string) bool {
+				stopFilter := model.NewStreamStopFilter(p.StopPrompts)
+				chunkBuf := newStreamChunkBuffer()
+				sendChunk := func(content string) bool {
+					if content == "" {
+						return true
+					}
 					data := &types.ResChatCompletion{
 						ID: fmt.Sprint(id),
 						Choices: []types.Choice{
 							{
 								Delta: &types.Message{
 									Role:    "assistant",
-									Content: token,
+									Content: content,
 								},
 								Index: 0,
 							},
 						},
 					}
-					chunk, err := json.Marshal(data)
+					payload, err := json.Marshal(data)
 					if err != nil {
 						return false
 					}
 					id++
-					return writeStream("data: " + string(chunk) + "\n\n")
+					return writeStream("data: " + string(payload) + "\n\n")
+				}
+				streamFlush = func() bool {
+					if tail, ok := chunkBuf.FlushFinal(); ok {
+						return sendChunk(tail)
+					}
+					return true
+				}
+				p.TokenCallback = func(token string) bool {
+					chunk, stopped := stopFilter.Push(token)
+					if chunk != "" {
+						if merged, ok := chunkBuf.Push(chunk); ok {
+							if !sendChunk(merged) {
+								return false
+							}
+						}
+					}
+					if stopped {
+						streamFlush()
+						return false
+					}
+					return true
 				}
 			}
-			p.Threads = runtime.NumCPU()
+			p.Threads = chatThreads()
 		})
 	}
 
@@ -299,9 +333,15 @@ predictDone:
 		}
 		return nil, err
 	}
+	if req.Stream && streamFlush != nil {
+		streamFlush()
+	}
 
 	rawResult := result
 	result = model.CleanAssistantReply(result)
+	if n := model.CountTokens(ll, text); n > 0 {
+		promptTokens = n
+	}
 	completionTokens = model.CountTokens(ll, rawResult)
 	if completionTokens == 0 && strings.TrimSpace(result) != "" {
 		completionTokens = model.CountTokens(ll, result)
@@ -391,20 +431,41 @@ func tokensPerSecond(tokens int, dur time.Duration) float64 {
 	return float64(tokens) / dur.Seconds()
 }
 
-func chatContextSize() int {
+func chatContextSize(modelAlias string) int {
 	const fallback = 32768
+	if n := model.ChatOptionInt(modelAlias, "ContextSize"); n > 0 {
+		return n
+	}
 	if n := modelOptionInt("ContextSize"); n > 0 {
 		return n
 	}
 	return fallback
 }
 
-func chatBatchSize() int {
-	const fallback = 32
+func chatBatchSize(modelAlias string) int {
+	const fallback = 512
+	if n := model.ChatOptionInt(modelAlias, "NBatch"); n > 0 {
+		return n
+	}
 	if n := modelOptionInt("NBatch"); n > 0 {
 		return n
 	}
 	return fallback
+}
+
+func chatThreads() int {
+	const fallback = 8
+	if n := modelOptionInt("Threads"); n > 0 {
+		return n
+	}
+	n := runtime.NumCPU()
+	if n > fallback {
+		return fallback
+	}
+	if n < 1 {
+		return fallback
+	}
+	return n
 }
 
 func streamHeartbeatInterval() time.Duration {

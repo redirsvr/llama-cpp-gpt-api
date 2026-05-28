@@ -1,10 +1,25 @@
 package rag
 
 import (
+	"fmt"
+	"log"
 	"strings"
 
+	llama "github.com/redirsvr/go-llama-new.cpp"
+
+	"llama-cpp-gpt-api/internal/config"
 	"llama-cpp-gpt-api/internal/types"
+	"llama-cpp-gpt-api/pkg/model"
 )
+
+var _ = llama.SetTokens // keep import
+
+const defaultRewritePrompt = `Rewrite the following question as a focused, concise search query for document retrieval. Extract the key entities and concepts. Return only the rewritten query in the same language as the original, no explanations.
+
+Original: %s
+Rewritten:`
+
+const shortRewriteResponse = 200
 
 // OpenWebUIServiceTask определяет служебные запросы Open WebUI (follow-up, title, tags).
 func OpenWebUIServiceTask(query string) string {
@@ -63,11 +78,65 @@ func stripInjectedRAGBlock(s string) string {
 		return strings.TrimSpace(s[idx+len("\n---\nВопрос:"):])
 	}
 	if idx := strings.Index(s, "Фрагменты документов:"); idx >= 0 {
-		// повторный запрос с уже вставленным RAG — берём только хвост после последнего «Вопрос:»
 		if j := strings.LastIndex(s, "Вопрос:"); j >= 0 {
 			return strings.TrimSpace(s[j+len("Вопрос:"):])
 		}
 		return ""
 	}
 	return s
+}
+
+// RewriteSearchQuery улучшает поисковый запрос через LLM (как multi-modal analysis в RAG-Anything).
+// Возвращает переписанный запрос, более подходящий для векторного поиска.
+// Требует RAG.QueryRewriting.Enabled = true.
+func RewriteSearchQuery(original string) string {
+	if original == "" {
+		return original
+	}
+	rc := config.C.RAG.QueryRewriting
+	if !rc.Enabled {
+		return original
+	}
+	modelAlias := rc.Model
+	if modelAlias == "" {
+		modelAlias = config.C.DefaultModel
+	}
+	if modelAlias == "" {
+		return original
+	}
+
+	log.Printf("RAG: переписывание запроса через %q: %q", modelAlias, truncateQueryLog(original, 60))
+
+	prompt := rc.Prompt
+	if prompt == "" {
+		prompt = defaultRewritePrompt
+	}
+	prompt = fmt.Sprintf(prompt, original)
+
+	var rewritten string
+	err := model.UseChat(modelAlias, func(ll *llama.LLama, _ string) error {
+		result, err := ll.Predict(prompt, llama.SetTokens(shortRewriteResponse))
+		if err != nil {
+			return fmt.Errorf("rewrite prediction: %w", err)
+		}
+		rewritten = strings.TrimSpace(result)
+		return nil
+	})
+	if err != nil {
+		log.Printf("RAG: переписывание запроса не удалось (%v) — использую оригинал", err)
+		return original
+	}
+	if rewritten == "" {
+		return original
+	}
+
+	rewritten = strings.Trim(rewritten, `"'«»`)
+	rewritten = PrepareText(strings.TrimSpace(rewritten))
+
+	if rewritten == "" {
+		return original
+	}
+
+	log.Printf("RAG: запрос переписан: %q → %q", truncateQueryLog(original, 40), truncateQueryLog(rewritten, 60))
+	return rewritten
 }

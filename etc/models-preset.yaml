@@ -1,0 +1,60 @@
+Models:
+  - File: Qwen3.6-27B-Q6_K.gguf
+    Alias: qwen-27b
+    ModelOption:
+      AutoGPU: true
+      NGPULayers: -1
+      ContextSize: 32768
+      FitParamsMinCtx: 32768
+      KVOffload: false
+      NBatch: 512
+      MainGPU: "0"
+      F16Memory: true
+      MMap: true
+
+  - File: Qwen3-8B-Q4_K_M.gguf
+    Alias: qwen3-8b
+    ModelOption:
+      AutoGPU: true
+      NGPULayers: -1
+      ContextSize: 32768
+      FitParamsMinCtx: 32768
+      KVOffload: false
+      NBatch: 512
+      MainGPU: "0"
+      F16Memory: true
+      MMap: true
+
+  - File: Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-Q6_K.gguf
+    Alias: qwen3.6-27b-mtp-preserved
+    ModelOption:
+      AutoGPU: true
+      NGPULayers: -1
+      ContextSize: 32768
+      FitParamsMinCtx: 32768
+      KVOffload: false
+      NBatch: 512
+      MainGPU: "0"
+      F16Memory: true
+      MMap: true
+
+  - File: Qwen3-Embedding-8B-Q8_0.gguf
+    Alias: qwen3-embed
+    EmbeddingModelOption:
+      ContextSize: 2048
+      NGPULayers: -1
+      NBatch: 2048
+      MainGPU: "0"
+      F16Memory: true
+      MMap: true
+
+  - File: nomic-embed-text-v1.5.gguf
+    Alias: nomic-embed-text
+    EmbeddingModelOption:
+      ContextSize: 2048
+      NGPULayers: -1
+      NBatch: 2048
+      MainGPU: "0"
+      F16Memory: true
+      MMap: true
+

@@ -3,6 +3,7 @@
 #
 # API должен быть доступен Prometheus (пример scrape ниже).
 # Импорт дашборда вручную: UI → Dashboards → Import → gpt-api.json
+# Grafana спросит Prometheus datasource через __inputs.
 
 services:
   prometheus:

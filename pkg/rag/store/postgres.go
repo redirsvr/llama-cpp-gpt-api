@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -526,13 +527,7 @@ func keywordTerms(query string, max int) []string {
 }
 
 func sortResultsDesc(r []ChunkResult) {
-	for i := 0; i < len(r); i++ {
-		for j := i + 1; j < len(r); j++ {
-			if r[j].Score > r[i].Score {
-				r[i], r[j] = r[j], r[i]
-			}
-		}
-	}
+	sort.Slice(r, func(i, j int) bool { return r[i].Score > r[j].Score })
 }
 
 func scanDocument(row pgx.Row) (*Document, error) {

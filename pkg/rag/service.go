@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -83,6 +84,18 @@ func Enabled() bool {
 	return defaultSvc != nil
 }
 
+// HasSearchableDocuments возвращает true, если в RAG есть хотя бы один чанк с embedding.
+func HasSearchableDocuments(ctx context.Context) (bool, error) {
+	if defaultSvc == nil || defaultSvc.db == nil {
+		return false, nil
+	}
+	total, withEmbedding, err := defaultSvc.db.ChunkStats(ctx)
+	if err != nil {
+		return false, err
+	}
+	return total > 0 && withEmbedding > 0, nil
+}
+
 func svc() (*Service, error) {
 	if defaultSvc == nil {
 		return nil, fmt.Errorf("RAG отключён или не инициализирован")
@@ -140,6 +153,18 @@ func (s *Service) ingest(ctx context.Context, in IngestInput) (*store.Document, 
 	log.Printf("RAG: готово %q — %d чанков", title, len(chunks))
 
 	chunkInputs := chunking.ChunksWithMeta(content, chunks, path, in.Metadata)
+
+	if maxKw := config.C.RAG.KeywordExtraction.MaxKeywords; maxKw > 0 {
+		for i := range chunkInputs {
+			kws := ExtractKeywords(chunkInputs[i].Content, maxKw)
+			if len(kws) > 0 {
+				if chunkInputs[i].Metadata == nil {
+					chunkInputs[i].Metadata = make(map[string]any)
+				}
+				chunkInputs[i].Metadata["keywords"] = kws
+			}
+		}
+	}
 
 	id, err := s.db.InsertDocument(ctx, title, path, hash, in.Metadata, chunkInputs, embeddings)
 	if err != nil {
@@ -266,16 +291,43 @@ func (s *Service) IngestConfiguredDirectories(ctx context.Context) (int, error) 
 	return count, nil
 }
 
-// Query выполняет гибридный поиск.
+// Query выполняет гибридный поиск с опциональным переписыванием запроса.
 func Query(ctx context.Context, query string, topK int) ([]store.ChunkResult, error) {
 	s, err := svc()
 	if err != nil {
 		return nil, err
 	}
+	total, withEmbedding, err := s.db.ChunkStats(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if total == 0 || withEmbedding == 0 {
+		log.Printf("RAG: searchable chunks отсутствуют (total=%d, with_embedding=%d) — запрос пойдёт напрямую в модель", total, withEmbedding)
+		return nil, nil
+	}
 	query = PrepareText(strings.TrimSpace(query))
 	if query == "" {
 		return nil, fmt.Errorf("пустой запрос")
 	}
+
+	rewritten := RewriteSearchQuery(query)
+	if rewritten != "" && rewritten != query {
+		log.Printf("RAG: поиск по переписанному запросу")
+		maxR := MaxEmbedRunes()
+		if utf8.RuneCountInString(rewritten) > maxR {
+			rewritten = TruncateRunes(rewritten, maxR)
+		}
+		modelAlias := model.DefaultEmbeddingModel()
+		hits, err := s.searchWithQueryVariants(ctx, modelAlias, rewritten, topK)
+		if err != nil {
+			return nil, err
+		}
+		if len(hits) > 0 {
+			return hits, nil
+		}
+		log.Printf("RAG: переписанный запрос не дал результатов — пробую оригинал")
+	}
+
 	maxR := MaxEmbedRunes()
 	if utf8.RuneCountInString(query) > maxR {
 		log.Printf("RAG: запрос обрезан до %d рун для embedding", maxR)
@@ -315,6 +367,13 @@ func (s *Service) searchWithQueryVariants(ctx context.Context, modelAlias, query
 			}
 		}
 		if len(hits) > 0 {
+			if config.C.RAG.KeywordExtraction.MaxKeywords > 0 {
+				keywordBoost(query, hits)
+				sortResultsByScoreDesc(hits)
+				if len(hits) > topK {
+					hits = hits[:topK]
+				}
+			}
 			if v.label != "search_query" {
 				log.Printf("RAG: совпадения по запросу (%s), префикс search_query не сработал — нужна POST /v1/rag/reindex-embeddings", v.label)
 			}
@@ -412,6 +471,10 @@ func truncateQueryLog(s string, max int) string {
 		return s
 	}
 	return s[:max] + "…"
+}
+
+func sortResultsByScoreDesc(r []store.ChunkResult) {
+	sort.Slice(r, func(i, j int) bool { return r[i].Score > r[j].Score })
 }
 
 func hashContent(s string) string {
