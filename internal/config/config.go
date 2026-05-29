@@ -24,6 +24,7 @@ type Config struct {
 	ChatTemplate          string                 `yaml:"ChatTemplate"`
 	DefaultMaxTokens      int                    `yaml:"DefaultMaxTokens"`
 	PreloadDefaultModel   bool                   `yaml:"PreloadDefaultModel"`
+	UnloadModelsFromGPU   bool                   `yaml:"UnloadModelsFromGPU"` // true — перед загрузкой другой модели выгружать остальные с GPU
 	DisableThinking       bool                   `yaml:"DisableThinking"`
 	RAG                   RAGConfig              `yaml:"RAG"`
 }

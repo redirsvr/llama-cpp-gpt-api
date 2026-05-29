@@ -95,6 +95,9 @@ func Init() error {
 	if len(registry.embeddingAliases) > 0 {
 		log.Printf("models: embeddings: %v", registry.ListEmbeddingAliases())
 	}
+	if config.C.UnloadModelsFromGPU {
+		log.Println("models: UnloadModelsFromGPU=true — перед загрузкой другой модели остальные выгружаются с GPU")
+	}
 
 	if registry.defaultAlias != "" {
 		if _, ok := registry.aliases[registry.defaultAlias]; !ok {
@@ -301,6 +304,39 @@ func loadModeKey(alias string, mode loadMode) string {
 	return alias + ":" + loadModeLabel(mode)
 }
 
+func splitLoadModeKey(loadKey string) (alias, mode string) {
+	i := strings.LastIndex(loadKey, ":")
+	if i <= 0 {
+		return loadKey, "chat"
+	}
+	return loadKey[:i], loadKey[i+1:]
+}
+
+// unloadOthersLocked выгружает все модели кроме keepLoadKey. Вызывать под r.mu.
+func (r *Registry) unloadOthersLocked(keepLoadKey string) {
+	if !config.C.UnloadModelsFromGPU {
+		return
+	}
+	for loadKey, entry := range r.loaded {
+		if loadKey == keepLoadKey {
+			continue
+		}
+		if !entry.mu.TryLock() {
+			log.Printf("models: выгрузка GPU: пропуск %q (модель занята)", loadKey)
+			continue
+		}
+		if entry.ll != nil {
+			entry.ll.Free()
+			entry.ll = nil
+		}
+		entry.mu.Unlock()
+		delete(r.loaded, loadKey)
+		alias, modeLabel := splitLoadModeKey(loadKey)
+		metrics.SetModelLoaded(alias, modeLabel, false)
+		log.Printf("models: выгружена %q (освобождение GPU)", loadKey)
+	}
+}
+
 // UseChat выполняет fn с эксклюзивным доступом к модели.
 // Разные модели могут работать параллельно.
 func UseChat(alias string, fn func(*llama.LLama, string) error) error {
@@ -348,6 +384,8 @@ func (r *Registry) getOrLoad(key, path string, mode loadMode) (*loadedEntry, err
 		r.mu.Unlock()
 		return entry, nil
 	}
+
+	r.unloadOthersLocked(loadKey)
 
 	embeddings := mode == loadModeEmbeddings
 	modeLabel := loadModeLabel(mode)

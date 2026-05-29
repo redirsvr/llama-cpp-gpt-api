@@ -49,6 +49,17 @@ func TestResolveEmbeddingNotSupported(t *testing.T) {
     }
 }
 
+func TestSplitLoadModeKey(t *testing.T) {
+    alias, mode := splitLoadModeKey("qwen-27b:chat")
+    if alias != "qwen-27b" || mode != "chat" {
+        t.Fatalf("got %q, %q", alias, mode)
+    }
+    alias, mode = splitLoadModeKey("nomic-embed:embeddings")
+    if alias != "nomic-embed" || mode != "embeddings" {
+        t.Fatalf("got %q, %q", alias, mode)
+    }
+}
+
 func TestCapabilities(t *testing.T) {
     r := &Registry{
         embeddingAliases: map[string]struct{}{"e1": {}},
