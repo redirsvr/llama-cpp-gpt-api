@@ -49,6 +49,57 @@ func TestResolveEmbeddingNotSupported(t *testing.T) {
     }
 }
 
+func TestUnloadOthersRemovesOtherModels(t *testing.T) {
+	config.C = config.Config{UnloadModelsFromGPU: true}
+	r := &Registry{
+		loaded: map[string]*loadedEntry{
+			"chat-model:chat":         {},
+			"embed-model:embeddings": {},
+		},
+	}
+	r.mu.Lock()
+	r.unloadOthersLocked("embed-model:embeddings")
+	r.mu.Unlock()
+
+	if _, ok := r.loaded["chat-model:chat"]; ok {
+		t.Fatal("chat model should be unloaded")
+	}
+	if _, ok := r.loaded["embed-model:embeddings"]; !ok {
+		t.Fatal("embed model should remain")
+	}
+}
+
+func TestUnloadEntryIfCurrent(t *testing.T) {
+	config.C = config.Config{UnloadModelsFromGPU: true}
+	entry := &loadedEntry{}
+	r := &Registry{
+		loaded: map[string]*loadedEntry{
+			"m:chat": entry,
+		},
+	}
+	r.unloadEntryIfCurrent("m:chat", entry)
+	if _, ok := r.loaded["m:chat"]; ok {
+		t.Fatal("entry should be removed")
+	}
+	if entry.ll != nil {
+		t.Fatal("ll should be nil after unload")
+	}
+}
+
+func TestUnloadOthersDisabled(t *testing.T) {
+	config.C = config.Config{UnloadModelsFromGPU: false}
+	r := &Registry{
+		loaded: map[string]*loadedEntry{
+			"a:chat":         {},
+			"b:embeddings": {},
+		},
+	}
+	r.unloadOthers("b:embeddings")
+	if len(r.loaded) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(r.loaded))
+	}
+}
+
 func TestSplitLoadModeKey(t *testing.T) {
     alias, mode := splitLoadModeKey("qwen-27b:chat")
     if alias != "qwen-27b" || mode != "chat" {

@@ -99,7 +99,7 @@ Swagger UI: `http://localhost:8080/docs/`
 | `SystemPrompt` | Первое system-сообщение (как в OpenAI) |
 | `DisableThinking` | Для Qwen3: `/no_think` в промпте |
 | `PreloadDefaultModel` | `false` — не грузить модель при старте |
-| `UnloadModelsFromGPU` | `true` — перед загрузкой другой модели выгружать остальные с GPU (удобно для RAG: chat + embed на одной видеокарте) |
+| `UnloadModelsFromGPU` | `true` — держать в GPU только одну модель: перед использованием выгружать остальные и после запроса снимать текущую (RAG chat+embed на одной GPU; при `PreloadDefaultModel` в памяти останется последняя предзагруженная) |
 | `RAG` | PostgreSQL, чанкинг, hybrid search, auto-ingest |
 
 ### GPU: важно

@@ -6,6 +6,20 @@ import (
 	"testing"
 )
 
+func TestLoadUnloadModelsFromGPU(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "gpt-api.yaml")
+	if err := os.WriteFile(cfgPath, []byte("UnloadModelsFromGPU: true\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Load(cfgPath); err != nil {
+		t.Fatal(err)
+	}
+	if !C.UnloadModelsFromGPU {
+		t.Fatal("UnloadModelsFromGPU should be true")
+	}
+}
+
 func TestLoadModelPresetsFromDefaultFile(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "gpt-api.yaml")

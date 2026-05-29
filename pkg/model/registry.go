@@ -118,6 +118,8 @@ func Init() error {
 		if config.C.PreloadDefaultModel {
 			log.Printf("models: предзагрузка %q (embeddings)", registry.defaultEmbeddingAlias)
 			if key, path, err := registry.resolve(registry.defaultEmbeddingAlias, loadModeEmbeddings); err == nil {
+				embedKey := loadModeKey(key, loadModeEmbeddings)
+				registry.unloadOthers(embedKey)
 				if _, err := registry.getOrLoad(key, path, loadModeEmbeddings); err != nil {
 					return err
 				}
@@ -312,11 +314,18 @@ func splitLoadModeKey(loadKey string) (alias, mode string) {
 	return loadKey[:i], loadKey[i+1:]
 }
 
-// unloadOthersLocked выгружает все модели кроме keepLoadKey. Вызывать под r.mu.
-func (r *Registry) unloadOthersLocked(keepLoadKey string) {
+// unloadOthers выгружает все загруженные модели, кроме keepLoadKey (если она уже в реестре).
+func (r *Registry) unloadOthers(keepLoadKey string) {
 	if !config.C.UnloadModelsFromGPU {
 		return
 	}
+	r.mu.Lock()
+	r.unloadOthersLocked(keepLoadKey)
+	r.mu.Unlock()
+}
+
+// unloadOthersLocked выгружает все модели кроме keepLoadKey. Вызывать под r.mu.
+func (r *Registry) unloadOthersLocked(keepLoadKey string) {
 	for loadKey, entry := range r.loaded {
 		if loadKey == keepLoadKey {
 			continue
@@ -335,6 +344,24 @@ func (r *Registry) unloadOthersLocked(keepLoadKey string) {
 		metrics.SetModelLoaded(alias, modeLabel, false)
 		log.Printf("models: выгружена %q (освобождение GPU)", loadKey)
 	}
+}
+
+// unloadEntryIfCurrent снимает модель с GPU после использования (только если entry всё ещё в реестре).
+func (r *Registry) unloadEntryIfCurrent(loadKey string, entry *loadedEntry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cur, ok := r.loaded[loadKey]
+	if !ok || cur != entry {
+		return
+	}
+	if entry.ll != nil {
+		entry.ll.Free()
+		entry.ll = nil
+	}
+	delete(r.loaded, loadKey)
+	alias, modeLabel := splitLoadModeKey(loadKey)
+	metrics.SetModelLoaded(alias, modeLabel, false)
+	log.Printf("models: выгружена %q после использования", loadKey)
 }
 
 // UseChat выполняет fn с эксклюзивным доступом к модели.
@@ -358,14 +385,29 @@ func useModel(alias string, mode loadMode, fn func(*llama.LLama, string) error) 
 		return err
 	}
 
-	entry, err := registry.getOrLoad(key, path, mode)
-	if err != nil {
-		return err
-	}
+	loadKey := loadModeKey(key, mode)
+	registry.unloadOthers(loadKey)
 
-	entry.mu.Lock()
-	defer entry.mu.Unlock()
-	return fn(entry.ll, key)
+	for attempt := 0; attempt < 2; attempt++ {
+		entry, err := registry.getOrLoad(key, path, mode)
+		if err != nil {
+			return err
+		}
+
+		entry.mu.Lock()
+		if entry.ll == nil {
+			entry.mu.Unlock()
+			continue
+		}
+		runErr := fn(entry.ll, key)
+		entry.mu.Unlock()
+
+		if config.C.UnloadModelsFromGPU {
+			registry.unloadEntryIfCurrent(loadKey, entry)
+		}
+		return runErr
+	}
+	return fmt.Errorf("модель %q: не удалось получить контекст после выгрузки", key)
 }
 
 func (r *Registry) getOrLoad(key, path string, mode loadMode) (*loadedEntry, error) {
@@ -384,8 +426,6 @@ func (r *Registry) getOrLoad(key, path string, mode loadMode) (*loadedEntry, err
 		r.mu.Unlock()
 		return entry, nil
 	}
-
-	r.unloadOthersLocked(loadKey)
 
 	embeddings := mode == loadModeEmbeddings
 	modeLabel := loadModeLabel(mode)
